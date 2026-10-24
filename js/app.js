@@ -1,5 +1,5 @@
-import { db } from "./db.js";
-import { ensureDemoCameraReads, ensureDemoQuotes, ensureEquipmentWorkstations, ensureSingleGarage, ensureWorkOrderEquipment, seedDemo } from "./seed.js";
+import { db, ensureRecordNumbers } from "./db.js";
+import { ensureDemoCameraReads, ensureDemoQuotes, ensureEquipmentWorkstations, ensureSingleGarage, ensureSuppliers, ensureWorkOrderEquipment, seedDemo } from "./seed.js";
 import { h, toDatetimeLocal } from "./format.js";
 import * as pages from "./pages.js";
 import {
@@ -31,6 +31,7 @@ async function loadCtx(garageId) {
     technicians,
     appointments,
     parts,
+    suppliers,
     workOrders,
     lines,
     invoices,
@@ -38,6 +39,7 @@ async function loadCtx(garageId) {
     quoteLines,
     equipment,
     cameraReads,
+    stockMovements,
   ] = await Promise.all([
     db.getAll("garages"),
     db.byGarage("customers", garageId),
@@ -45,6 +47,7 @@ async function loadCtx(garageId) {
     db.byGarage("technicians", garageId),
     db.byGarage("appointments", garageId),
     db.byGarage("parts", garageId),
+    db.byGarage("suppliers", garageId),
     db.byGarage("workOrders", garageId),
     db.byGarage("workOrderLines", garageId),
     db.byGarage("invoices", garageId),
@@ -52,6 +55,7 @@ async function loadCtx(garageId) {
     db.byGarage("quoteLines", garageId),
     db.byGarage("equipment", garageId),
     db.byGarage("cameraReads", garageId),
+    db.byGarage("stockMovements", garageId),
   ]);
   const garage = garages.find((g) => g.id === garageId) || garages[0];
   return {
@@ -62,6 +66,7 @@ async function loadCtx(garageId) {
     technicians,
     appointments,
     parts,
+    suppliers,
     workOrders,
     lines,
     invoices,
@@ -69,6 +74,7 @@ async function loadCtx(garageId) {
     quoteLines,
     equipment,
     cameraReads,
+    stockMovements,
     query: search.toLowerCase(),
     search,
   };
@@ -133,6 +139,10 @@ async function pageFor(section, id, ctx, extra) {
       return pages.inrit(ctx);
     case "onderdelen":
       return pages.onderdelen(ctx, id);
+    case "voorraadboekingen":
+      return pages.voorraadboekingen(ctx, id);
+    case "leveranciers":
+      return pages.leveranciers(ctx, id);
     case "facturen":
       return pages.facturen(ctx, id);
     case "offertes":
@@ -157,6 +167,9 @@ async function render() {
   const garageId = await ensureSingleGarage(localStorage.getItem("werkplaats-garage"));
   await ensureDemoCameraReads(garageId);
   await ensureDemoQuotes(garageId);
+  await ensureSuppliers(garageId);
+  await ensureRecordNumbers(garageId, "customers", "KL");
+  await ensureRecordNumbers(garageId, "suppliers", "LV");
   await ensureEquipmentWorkstations();
   await ensureWorkOrderEquipment();
   const ctx = await loadCtx(garageId);
@@ -234,23 +247,33 @@ function bind(ctx) {
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const type = form.getAttribute("data-save");
-      const data = Object.fromEntries(new FormData(form).entries());
-      const next = await pages.handleSave(type, data, ctx);
+      const formData = new FormData(form);
+      const next =
+        type === "stockMovements"
+          ? await pages.saveStockMovements(formData, ctx)
+          : await pages.handleSave(type, Object.fromEntries(formData.entries()), ctx);
+      if (!next) return;
       location.hash = next;
       search = "";
       await render();
     });
   });
 
-  appEl.querySelector("[data-parts-excel]")?.addEventListener("change", async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    try {
-      location.hash = await pages.importPartsExcel(file, ctx);
-      await render();
-    } catch (error) {
-      alert(error.message || "Excel-import mislukt.");
-    }
+  appEl.querySelectorAll("[data-excel-import], [data-parts-excel]").forEach((input) => {
+    input.addEventListener("change", async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      const kind = input.getAttribute("data-excel-import") || "parts";
+      try {
+        location.hash = await pages.importExcel(kind, file, ctx);
+        await render();
+      } catch (error) {
+        alert(error.message || "Excel-import mislukt.");
+      }
+    });
+  });
+  appEl.querySelectorAll("[data-excel-export]").forEach((btn) => {
+    btn.addEventListener("click", () => pages.exportExcel(btn.getAttribute("data-excel-export"), ctx));
   });
 
   appEl.querySelector("[data-wo-file]")?.addEventListener("change", async (event) => {
@@ -419,7 +442,9 @@ function bind(ctx) {
     if (search) search.value = selectEl.selectedOptions[0]?.textContent?.trim() || "";
   };
 
-  appEl.querySelectorAll("[data-combo]").forEach((combo) => {
+  const bindCombo = (combo) => {
+    if (combo.dataset.bound) return;
+    combo.dataset.bound = "1";
     const selectEl = combo.querySelector("select");
     const search = combo.querySelector("[data-combo-search]");
     const panel = combo.querySelector(".combo-panel");
@@ -467,6 +492,23 @@ function bind(ctx) {
         selectEl.dispatchEvent(new Event("change"));
       });
     });
+  };
+
+  appEl.querySelectorAll("[data-combo]").forEach(bindCombo);
+
+  appEl.querySelector("[data-add-stock-line]")?.addEventListener("click", () => {
+    const wrap = appEl.querySelector("[data-stock-lines]");
+    const tpl = document.getElementById("stock-line-template");
+    if (!wrap || !tpl) return;
+    wrap.appendChild(tpl.content.cloneNode(true));
+    wrap.lastElementChild?.querySelectorAll("[data-combo]").forEach(bindCombo);
+  });
+  appEl.querySelector("[data-stock-lines]")?.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-remove-stock-line]");
+    if (!btn) return;
+    const wrap = appEl.querySelector("[data-stock-lines]");
+    if (wrap && wrap.querySelectorAll(".stock-line").length <= 1) return;
+    btn.closest(".stock-line")?.remove();
   });
 
   const appointmentSelect = appEl.querySelector("form[data-save=workOrder] select[name=appointmentId]");

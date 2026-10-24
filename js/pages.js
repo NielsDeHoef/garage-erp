@@ -1,5 +1,5 @@
 import { db, nextDocNumber, lineTotals, exportAll, importAll } from "./db.js";
-import { partsFromRows, rowsFromSpreadsheet } from "./excel-import.js";
+import { customersFromRows, downloadCsv, partsFromRows, rowsFromSpreadsheet, suppliersFromRows, vehiclesFromRows } from "./excel-import.js";
 import {
   EQUIPMENT_TYPES,
   FUELS,
@@ -38,6 +38,8 @@ export const NAV = [
   ["klanten", "Klanten"],
   ["voertuigen", "Voertuigen"],
   ["onderdelen", "Onderdelen"],
+  ["voorraadboekingen", "Voorraadboekingen"],
+  ["leveranciers", "Leveranciers"],
   ["facturen", "Facturen"],
   ["apparatuur", "Apparatuur"],
   ["instellingen", "Instellingen"],
@@ -85,7 +87,7 @@ function select(name, options, value, extra = "") {
 function customerChoiceOptions(ctx) {
   return ctx.customers.map((c) => ({
     value: c.id,
-    label: [c.name, c.company, customerPhones(c)[0]].filter(Boolean).join(" · "),
+    label: [c.number, c.name, c.company, customerPhones(c)[0]].filter(Boolean).join(" · "),
   }));
 }
 
@@ -98,14 +100,53 @@ function vehicleChoiceOptions(ctx, { empty = true } = {}) {
   return empty ? [{ value: "", label: "—" }, ...rows] : rows;
 }
 
+function supplierChoiceOptions(ctx) {
+  const rows = (ctx.suppliers || [])
+    .slice()
+    .sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "nl", { sensitivity: "base" }))
+    .map((s) => ({
+      value: s.id,
+      label: [s.number, s.name, s.contact, s.phone].filter(Boolean).join(" · "),
+    }));
+  return [{ value: "", label: "—" }, ...rows];
+}
+
+function partChoiceOptions(ctx) {
+  const rows = [...ctx.parts]
+    .sort((a, b) => String(a.sku || "").localeCompare(String(b.sku || ""), "nl", { numeric: true }))
+    .map((p) => ({
+      value: p.id,
+      label: `${p.sku} · ${p.name}${p.brand ? ` · ${p.brand}` : ""}`,
+      price: p.unitPrice,
+      name: p.name,
+    }));
+  return [{ value: "", label: "—" }, ...rows];
+}
+
+function selectedSupplierId(ctx, row) {
+  if (row?.supplierId && (ctx.suppliers || []).some((s) => s.id === row.supplierId)) return row.supplierId;
+  const name = String(row?.supplier || "").trim().toLowerCase();
+  if (!name) return "";
+  return (ctx.suppliers || []).find((s) => String(s.name || "").trim().toLowerCase() === name)?.id || "";
+}
+
 function searchSelect(name, options, value, extra = "") {
-  const selected = options.find((o) => String(o.value) === String(value)) || options.find((o) => o.value) || options[0];
-  const placeholder = name === "vehicleId" ? "Zoek nummerplaat of voertuig..." : "Zoek klant...";
+  const selected = options.find((o) => String(o.value) === String(value ?? "")) || options[0];
+  const placeholder =
+    name === "vehicleId"
+      ? "Zoek nummerplaat of voertuig..."
+      : name === "supplierId"
+        ? "Zoek leverancier..."
+        : name === "partId"
+          ? "Zoek SKU of onderdeel..."
+          : "Zoek klant...";
   const items = options
     .map((o) => {
       const attrs = [
         `data-value="${h(o.value)}"`,
         o.customerId ? `data-customer-id="${h(o.customerId)}"` : "",
+        o.price != null && o.price !== "" ? `data-price="${h(o.price)}"` : "",
+        o.name ? `data-name="${h(o.name)}"` : "",
       ]
         .filter(Boolean)
         .join(" ");
@@ -121,6 +162,13 @@ function searchSelect(name, options, value, extra = "") {
 
 function empty(text) {
   return `<div class="empty">${h(text)}</div>`;
+}
+
+function excelButtons(kind) {
+  return `<label class="btn secondary excel-btn">Excel importeren
+        <input type="file" accept=".xlsx,.csv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" data-excel-import="${kind}" hidden>
+      </label>
+      <button class="btn secondary excel-btn" type="button" data-excel-export="${kind}">Excel exporteren</button>`;
 }
 
 const tableSorts = {};
@@ -483,10 +531,11 @@ export async function klanten(ctx, id) {
     if (id !== "new" && !row) return { title: "Klant", html: empty("Klant niet gevonden.") };
     return {
       title: row ? row.name : "Nieuwe klant",
-      subtitle: "Contact- en factuurgegevens",
+      subtitle: row?.number ? `Klantnummer ${row.number}` : "Contact- en factuurgegevens",
       actions: row ? `<button class="btn danger" data-delete="customers:${row.id}">Verwijderen</button>` : "",
       html: `<form class="panel grid" data-save="customer">
         <input type="hidden" name="id" value="${h(row?.id || "")}">
+        ${row?.number ? field("Klantnummer", `<div class="mono" style="padding:10px 0">${h(row.number)}</div>`) : ""}
         <div class="grid grid-2">
           ${field("Naam", input("name", row?.name, "required"))}
           ${field("Bedrijf", input("company", row?.company))}
@@ -542,42 +591,47 @@ export async function klanten(ctx, id) {
 
   const q = ctx.query;
   const rows = ctx.customers.filter((c) =>
-    `${c.name} ${c.company} ${customerPhones(c).join(" ")} ${c.city}`.toLowerCase().includes(q)
+    `${c.number || ""} ${c.name} ${c.company} ${customerPhones(c).join(" ")} ${c.city}`.toLowerCase().includes(q)
   );
   return {
     title: "Klanten",
     subtitle: `${ctx.customers.length} klanten in deze garage`,
-    actions: `<a class="btn accent" href="#/klanten/new">Nieuwe klant</a>`,
+    actions: `${excelButtons("customers")}
+      <a class="btn accent" href="#/klanten/new">Nieuwe klant</a>`,
     html: `
       <div class="panel">
-        <input class="input" data-search placeholder="Zoek op naam, telefoon of gemeente" value="${h(ctx.search)}">
+        <p class="muted" style="margin-top:0">Importeer of exporteer Excel/CSV. Koppen: Nummer, Naam, Bedrijf, Telefoon, E-mail, Adres, Postcode, Gemeente, BTW. Bestaande rijen worden herkend op e-mail of naam + bedrijf.</p>
+        <input class="input" data-search placeholder="Zoek op nummer, naam, telefoon of gemeente" value="${h(ctx.search)}">
         ${
           rows.length
             ? `<table><thead><tr>${ths(
                 "klanten",
                 [
+                  { key: "number", label: "Nummer" },
                   { key: "name", label: "Naam" },
                   { key: "contact", label: "Contact" },
                   { key: "vehicles", label: "Voertuigen" },
                   { key: "city", label: "Plaats" },
                 ],
-                "name"
+                "number"
               )}</tr></thead><tbody>
           ${sorted(
             "klanten",
             rows,
             {
+              number: (c) => c.number || "",
               name: (c) => `${c.name} ${c.company || ""}`,
               contact: (c) => customerPhones(c)[0] || c.email || "",
               vehicles: (c) => ctx.vehicles.filter((v) => v.customerId === c.id).length,
               city: (c) => `${c.postalCode || ""} ${c.city || ""}`,
             },
-            "name"
+            "number"
           )
             .map((c) => {
               const cars = ctx.vehicles.filter((v) => v.customerId === c.id);
               const plates = cars.map((v) => v.licensePlate).join(", ") || "—";
               return `<tr class="clickable" data-go="#/klanten/${c.id}">
+              <td class="mono">${h(c.number || "—")}</td>
               <td><strong>${h(c.name)}</strong><div class="muted">${h(c.company)}</div></td>
               <td>${h(customerPhones(c).join(" · ") || "—")}<div class="muted">${h(c.email)}</div></td>
               <td class="mono">${h(plates)}<div class="muted">${cars.length} wagen${cars.length === 1 ? "" : "s"}</div></td>
@@ -645,8 +699,10 @@ export async function voertuigen(ctx, id, extra) {
   );
   return {
     title: "Voertuigen",
-    actions: `<a class="btn accent" href="#/voertuigen/new">Nieuw voertuig</a>`,
+    actions: `${excelButtons("vehicles")}
+      <a class="btn accent" href="#/voertuigen/new">Nieuw voertuig</a>`,
     html: `<div class="panel">
+      <p class="muted" style="margin-top:0">Importeer of exporteer Excel/CSV. Koppen: Nummerplaat, Merk, Model, Klant, Brandstof, Km, Bouwjaar, VIN, Bedrijf. Bestaande nummerplaten worden bijgewerkt. Onbekende klant wordt overgeslagen.</p>
       <input class="input" data-search placeholder="Zoek op nummerplaat of merk" value="${h(ctx.search)}">
       ${
         rows.length
@@ -872,18 +928,7 @@ export async function werkbonnen(ctx, id, extra) {
             ])
           )}
           ${field("Omschrijving", input("description", "", "required"))}
-          ${field(
-            "Onderdeel",
-            select("partId", [
-              { value: "", label: "—" },
-              ...ctx.parts.map((p) => ({
-                value: p.id,
-                label: `${p.sku} ${p.name}`,
-                price: p.unitPrice,
-                name: p.name,
-              })),
-            ])
-          )}
+          ${field("Onderdeel", searchSelect("partId", partChoiceOptions(ctx), ""))}
           ${field("Aantal / uren", input("qty", "1", 'type="number" step="0.25" required'))}
           ${field("Prijs", input("unitPrice", ctx.garage.hourlyRate, 'type="number" step="0.01" required'))}
           <button class="btn" type="submit">Regel toevoegen</button>
@@ -1047,7 +1092,7 @@ export async function onderdelen(ctx, id) {
         <div class="grid grid-3">
           ${field("Merk", input("brand", row?.brand))}
           ${field("Categorie", input("category", row?.category))}
-          ${field("Leverancier", input("supplier", row?.supplier))}
+          ${field("Leverancier", searchSelect("supplierId", supplierChoiceOptions(ctx), selectedSupplierId(ctx, row)))}
         </div>
         <div class="grid grid-3">
           ${field("Aankoopprijs excl.", input("purchasePrice", row?.purchasePrice ?? "", 'type="number" step="0.01"'))}
@@ -1067,12 +1112,10 @@ export async function onderdelen(ctx, id) {
   );
   return {
     title: "Onderdelen",
-    actions: `<label class="btn secondary" style="cursor:pointer">Excel importeren
-        <input type="file" accept=".xlsx,.csv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" data-parts-excel hidden>
-      </label>
+    actions: `${excelButtons("parts")}
       <a class="btn accent" href="#/onderdelen/new">Nieuw onderdeel</a>`,
     html: `<div class="panel">
-      <p class="muted" style="margin-top:0">Importeer een Excel- of CSV-bestand. Eerste rij bij voorkeur: SKU, Naam, Merk, Categorie, Leverancier, Aankoopprijs, Verkoopprijs, Voorraad, Minimum, Locatie. Bestaande SKU’s worden bijgewerkt.</p>
+      <p class="muted" style="margin-top:0">Importeer of exporteer Excel/CSV. Koppen: SKU, Naam, Merk, Categorie, Leverancier, Aankoopprijs, Verkoopprijs, Voorraad, Minimum, Locatie. Bestaande SKU’s worden bijgewerkt.</p>
       <input class="input" data-search placeholder="Zoek SKU, naam of leverancier" value="${h(ctx.search)}">
       ${
         rows.length
@@ -1115,6 +1158,240 @@ export async function onderdelen(ctx, id) {
           : empty("Nog geen onderdelen.")
       }
     </div>`,
+  };
+}
+
+function stockLineRow(ctx, today) {
+  return `<div class="stock-line">
+    ${field("SKU", searchSelect("partId", partChoiceOptions(ctx), ""))}
+    ${field("Datum", input("bookedAt", today, 'type="date"'))}
+    ${field("Hoeveelheid", input("qty", "", 'type="number" step="1"'))}
+    <button class="btn danger stock-line-remove" type="button" data-remove-stock-line aria-label="Regel verwijderen">×</button>
+  </div>`;
+}
+
+export async function voorraadboekingen(ctx, id) {
+  const today = todayIso();
+  if (id === "new") {
+    if (!ctx.parts.length) {
+      return {
+        title: "Binnengekomen voorraadboekingen",
+        html: empty("Maak eerst onderdelen aan.") + `<p><a class="btn accent" href="#/onderdelen/new">Nieuw onderdeel</a></p>`,
+      };
+    }
+    return {
+      title: "Nieuwe voorraadboeking",
+      subtitle: "SKU, datum en hoeveelheid — daarna past de voorraad zich aan",
+      actions: `<a class="btn secondary" href="#/voorraadboekingen">Terug naar lijst</a>`,
+      html: `<form class="panel grid" data-save="stockMovements">
+        <p class="muted" style="margin-top:0">Positief aantal = binnengekomen. Negatief = uit voorraad (bijvoorbeeld gratis weggeven).</p>
+        <div data-stock-lines>${stockLineRow(ctx, today)}${stockLineRow(ctx, today)}${stockLineRow(ctx, today)}</div>
+        <div class="row">
+          <button class="btn secondary" type="button" data-add-stock-line>Regel toevoegen</button>
+          <button class="btn accent" type="submit">Lijst opslaan</button>
+        </div>
+      </form>
+      <template id="stock-line-template">${stockLineRow(ctx, today)}</template>`,
+    };
+  }
+
+  const rows = (ctx.stockMovements || []).filter((row) =>
+    `${row.sku} ${row.name} ${row.qty}`.toLowerCase().includes(ctx.query)
+  );
+  const partById = Object.fromEntries(ctx.parts.map((p) => [p.id, p]));
+  return {
+    title: "Binnengekomen voorraadboekingen",
+    subtitle: "Voorraad aanpassen via SKU, datum en hoeveelheid",
+    actions: `<a class="btn accent" href="#/voorraadboekingen/new">Nieuwe boeking</a>`,
+    html: `<div class="panel">
+      <input class="input" data-search placeholder="Zoek SKU of onderdeel" value="${h(ctx.search)}">
+      ${
+        rows.length
+          ? `<table><thead><tr>${ths(
+              "voorraadboekingen",
+              [
+                { key: "date", label: "Datum" },
+                { key: "sku", label: "SKU" },
+                { key: "name", label: "Onderdeel" },
+                { key: "qty", label: "Aantal", cls: "right" },
+                { key: "stock", label: "Voorraad nu", cls: "right" },
+                { key: "del", label: "", cls: "right" },
+              ],
+              "date",
+              "desc"
+            )}</tr></thead><tbody>
+        ${sorted(
+          "voorraadboekingen",
+          rows,
+          {
+            date: (row) => Number(row.bookedAt || row.createdAt || 0),
+            sku: (row) => row.sku || "",
+            name: (row) => row.name || "",
+            qty: (row) => Number(row.qty || 0),
+            stock: (row) => Number(partById[row.partId]?.stock || 0),
+            del: () => 0,
+          },
+          "date",
+          "desc"
+        )
+          .map((row) => {
+            const part = partById[row.partId];
+            const qty = Number(row.qty || 0);
+            return `<tr>
+            <td>${dateFmt.format(row.bookedAt || row.createdAt)}</td>
+            <td class="mono">${h(row.sku || part?.sku || "—")}</td>
+            <td>${h(row.name || part?.name || "—")}</td>
+            <td class="right">${qty > 0 ? `+${qty}` : qty}</td>
+            <td class="right">${part ? part.stock : "—"}</td>
+            <td class="right"><button class="btn danger" data-delete="stockMovements:${row.id}">×</button></td>
+          </tr>`;
+          })
+          .join("")}</tbody></table>`
+          : empty("Nog geen voorraadboekingen. Voeg binnengekomen of afgeboekte stukken toe.")
+      }
+    </div>`,
+  };
+}
+
+export async function saveStockMovements(formData, ctx) {
+  const garageId = ctx.garage?.id;
+  const partIds = formData.getAll("partId");
+  const dates = formData.getAll("bookedAt");
+  const qtys = formData.getAll("qty");
+  const batchId = uid();
+  const createdAt = Date.now();
+  let saved = 0;
+  for (let i = 0; i < partIds.length; i += 1) {
+    const partId = String(partIds[i] || "").trim();
+    const qty = Number(qtys[i]);
+    if (!partId || !Number.isFinite(qty) || qty === 0) continue;
+    const part = await db.get("parts", partId);
+    if (!part) continue;
+    part.stock = Number(part.stock || 0) + qty;
+    await db.put("parts", part);
+    const bookedAt = dates[i] ? parseIsoDate(dates[i]) : Date.now();
+    await db.put("stockMovements", {
+      id: uid(),
+      garageId,
+      batchId,
+      partId,
+      sku: part.sku,
+      name: part.name,
+      qty,
+      bookedAt: Number.isNaN(bookedAt) ? createdAt : bookedAt,
+      createdAt,
+    });
+    saved += 1;
+  }
+  if (!saved) {
+    alert("Vul minstens één regel in met SKU en een hoeveelheid anders dan 0.");
+    return "";
+  }
+  return "#/voorraadboekingen";
+}
+
+export async function leveranciers(ctx, id) {
+  if (id === "new" || (id && id !== "new")) {
+    const row = id === "new" ? null : (ctx.suppliers || []).find((s) => s.id === id);
+    if (id !== "new" && !row) return { title: "Leverancier", html: empty("Leverancier niet gevonden.") };
+    const linked = row ? ctx.parts.filter((p) => p.supplierId === row.id || p.supplier === row.name) : [];
+    return {
+      title: row ? row.name : "Nieuwe leverancier",
+      subtitle: row?.number ? `Leveranciersnummer ${row.number}` : "Contactgegevens voor onderdelen",
+      actions: row ? `<button class="btn danger" data-delete="suppliers:${row.id}">Verwijderen</button>` : "",
+      html: `<form class="panel grid" data-save="supplier">
+        <input type="hidden" name="id" value="${h(row?.id || "")}">
+        ${row?.number ? field("Leveranciersnummer", `<div class="mono" style="padding:10px 0">${h(row.number)}</div>`) : ""}
+        ${field("Naam", input("name", row?.name, "required"))}
+        <div class="grid grid-2">
+          ${field("Contactpersoon", input("contact", row?.contact))}
+          ${field("Telefoon", input("phone", row?.phone, 'type="tel"'))}
+        </div>
+        ${field("E-mail", input("email", row?.email, 'type="email"'))}
+        ${field("Adres", input("address", row?.address))}
+        ${field("Notities", area("notes", row?.notes))}
+        <div class="row"><button class="btn accent" type="submit">Opslaan</button></div>
+      </form>
+      ${
+        row
+          ? `<div class="panel" style="margin-top:16px">
+        <h3>Onderdelen</h3>
+        ${
+          linked.length
+            ? `<p class="muted">${linked.length} onderde${linked.length === 1 ? "el" : "len"} bij deze leverancier.</p>
+        <table><thead><tr><th>SKU</th><th>Naam</th></tr></thead><tbody>
+          ${linked
+            .map(
+              (p) => `<tr class="clickable" data-go="#/onderdelen/${p.id}">
+            <td class="mono">${h(p.sku)}</td>
+            <td>${h(p.name)}</td>
+          </tr>`
+            )
+            .join("")}</tbody></table>`
+            : empty("Nog geen onderdelen gekoppeld.")
+        }
+      </div>`
+          : ""
+      }`,
+    };
+  }
+
+  const q = ctx.query;
+  const rows = (ctx.suppliers || []).filter((s) =>
+    `${s.number || ""} ${s.name} ${s.contact || ""} ${s.phone || ""} ${s.email || ""} ${s.address || ""}`.toLowerCase().includes(q)
+  );
+  return {
+    title: "Leveranciers",
+    subtitle: `${(ctx.suppliers || []).length} leveranciers in deze garage`,
+    actions: `${excelButtons("suppliers")}
+      <a class="btn accent" href="#/leveranciers/new">Nieuwe leverancier</a>`,
+    html: `
+      <div class="panel">
+        <p class="muted" style="margin-top:0">Importeer of exporteer Excel/CSV. Koppen: Nummer, Naam, Contact, Telefoon, E-mail, Adres, Notities. Bestaande rijen worden herkend op nummer, e-mail of naam.</p>
+        <input class="input" data-search placeholder="Zoek op nummer, naam, contact of telefoon" value="${h(ctx.search)}">
+        ${
+          rows.length
+            ? `<table><thead><tr>${ths(
+                "leveranciers",
+                [
+                  { key: "number", label: "Nummer" },
+                  { key: "name", label: "Naam" },
+                  { key: "contact", label: "Contact" },
+                  { key: "email", label: "E-mail" },
+                  { key: "parts", label: "Onderdelen", cls: "right" },
+                ],
+                "number"
+              )}</tr></thead><tbody>
+          ${sorted(
+            "leveranciers",
+            rows,
+            {
+              number: (s) => s.number || "",
+              name: (s) => s.name,
+              contact: (s) => s.contact || s.phone || "",
+              email: (s) => s.email || "",
+              parts: (s) =>
+                ctx.parts.filter((p) => p.supplierId === s.id || String(p.supplier || "").toLowerCase() === String(s.name || "").toLowerCase())
+                  .length,
+            },
+            "number"
+          )
+            .map((s) => {
+              const count = ctx.parts.filter(
+                (p) => p.supplierId === s.id || String(p.supplier || "").toLowerCase() === String(s.name || "").toLowerCase()
+              ).length;
+              return `<tr class="clickable" data-go="#/leveranciers/${s.id}">
+              <td class="mono">${h(s.number || "—")}</td>
+              <td><strong>${h(s.name)}</strong><div class="muted">${h(s.address)}</div></td>
+              <td>${h(s.contact || "—")}<div class="muted">${h(s.phone)}</div></td>
+              <td>${h(s.email || "—")}</td>
+              <td class="right">${count}</td>
+            </tr>`;
+            })
+            .join("")}</tbody></table>`
+            : empty("Nog geen leveranciers.")
+        }
+      </div>`,
   };
 }
 
@@ -1270,7 +1547,8 @@ export async function offertes(ctx, id) {
       title: row ? row.number : "Nieuwe offerte",
       subtitle: row ? quoteStatusLabel(row.status) : "Concept — nog niet verstuurd",
       actions: row
-        ? `${
+        ? `${quotePlanningAction(ctx, row)}
+           ${
             row.workOrderId
               ? `<a class="btn secondary" href="#/werkbonnen/${row.workOrderId}">Open werkbon</a>`
               : `<button class="btn secondary" type="button" data-quote-workorder="${row.id}">Maak werkbon</button>`
@@ -1282,13 +1560,13 @@ export async function offertes(ctx, id) {
         row
           ? `<div class="panel send-choice no-print">
         <h3>${row.status === "concept" ? "Offerte is nog niet verstuurd" : "Opnieuw versturen of status wijzigen"}</h3>
-        <p class="muted">Verstuur per e-mail of sms. Afdrukken en PDF blijven beschikbaar. Aanvaarden maakt er later een werkbon van.</p>
+        <p class="muted">Verstuur per e-mail of sms. Afdrukken en PDF blijven beschikbaar. Aanvaarden opent de planning zodat je de job meteen kunt inplannen.</p>
         <div class="row">
           <button class="btn accent" type="button" data-quote-email="${row.id}">Verstuur per e-mail</button>
           <button class="btn accent" type="button" data-quote-sms="${row.id}">Verstuur per sms</button>
           <button class="btn secondary" type="button" data-quote-print="${row.id}">Afdrukken</button>
           <button class="btn secondary" type="button" data-quote-pdf="${row.id}">PDF downloaden</button>
-          ${row.status !== "aanvaard" ? `<button class="btn secondary" type="button" data-quote-status="${row.id}:aanvaard">Markeer als aanvaard</button>` : ""}
+          ${row.status !== "aanvaard" ? `<button class="btn accent" type="button" data-quote-status="${row.id}:aanvaard">Aanvaarden en inplannen</button>` : quotePlanningAction(ctx, row)}
           ${row.status !== "geweigerd" ? `<button class="btn secondary" type="button" data-quote-status="${row.id}:geweigerd">Geweigerd</button>` : ""}
         </div>
       </div>`
@@ -1325,18 +1603,7 @@ export async function offertes(ctx, id) {
             ])
           )}
           ${field("Omschrijving", input("description", "", "required"))}
-          ${field(
-            "Onderdeel",
-            select("partId", [
-              { value: "", label: "—" },
-              ...ctx.parts.map((p) => ({
-                value: p.id,
-                label: `${p.sku} ${p.name}`,
-                price: p.unitPrice,
-                name: p.name,
-              })),
-            ])
-          )}
+          ${field("Onderdeel", searchSelect("partId", partChoiceOptions(ctx), ""))}
           ${field("Aantal / uren", input("qty", "1", 'type="number" step="0.25" required'))}
           ${field("Prijs", input("unitPrice", ctx.garage.hourlyRate, 'type="number" step="0.01" required'))}
           <button class="btn" type="submit">Regel toevoegen</button>
@@ -1435,11 +1702,66 @@ function openWorkOrderForAppointment(ctx, appointment) {
   return wo;
 }
 
+function appointmentForQuote(ctx, quoteId) {
+  if (!quoteId) return null;
+  return ctx.appointments.find((a) => a.quoteId === quoteId) || null;
+}
+
+function quotePlanningHref(ctx, quote) {
+  const job = appointmentForQuote(ctx, quote.id);
+  return job ? `#/planning/${job.id}` : `#/planning/new/quote/${quote.id}`;
+}
+
+function quotePlanningAction(ctx, quote) {
+  if (!quote || quote.status !== "aanvaard") return "";
+  const job = appointmentForQuote(ctx, quote.id);
+  return job
+    ? `<a class="btn accent" href="${quotePlanningHref(ctx, quote)}">Open planning</a>`
+    : `<a class="btn accent" href="${quotePlanningHref(ctx, quote)}">Zet in planning</a>`;
+}
+
+function defaultJobStart() {
+  const d = new Date();
+  d.setMinutes(0, 0, 0);
+  d.setHours(d.getHours() + 1);
+  if (d.getHours() < PLAN_HOUR_START) d.setHours(PLAN_HOUR_START, 0, 0, 0);
+  if (d.getHours() >= PLAN_HOUR_END - 1) {
+    d.setDate(d.getDate() + 1);
+    d.setHours(PLAN_HOUR_START + 1, 0, 0, 0);
+  }
+  return d.getTime();
+}
+
+function quoteJobHours(ctx, quote) {
+  if (!quote) return 1;
+  const hours = (ctx.quoteLines || [])
+    .filter((line) => line.quoteId === quote.id && line.type === "arbeid")
+    .reduce((sum, line) => sum + Number(line.qty || 0), 0);
+  return Math.max(1, hours || 1);
+}
+
+function jobDraftFromQuote(ctx, quote) {
+  if (!quote) return null;
+  const start = defaultJobStart();
+  const hours = quoteJobHours(ctx, quote);
+  return {
+    title: quote.title,
+    customerId: quote.customerId,
+    vehicleId: quote.vehicleId,
+    notes: [quote.number, quote.notes].filter(Boolean).join(" — "),
+    quoteId: quote.id,
+    workOrderId: quote.workOrderId || null,
+    start,
+    end: start + hours * 3600000,
+  };
+}
+
 function jobForm(ctx, row, startMs) {
   const start = row?.start || startMs || Date.now();
   const end = row?.end || start + 3600000;
   return `<form class="panel grid" data-save="appointment">
         <input type="hidden" name="id" value="${h(row?.id || "")}">
+        <input type="hidden" name="quoteId" value="${h(row?.quoteId || "")}">
         ${field("Job / titel", input("title", row?.title, "required"))}
         <div class="grid grid-2">
           ${field("Klant", searchSelect("customerId", customerChoiceOptions(ctx), row?.customerId, "required"))}
@@ -1460,7 +1782,7 @@ function jobForm(ctx, row, startMs) {
         <div class="row">
           <button class="btn accent" type="submit">Opslaan</button>
           ${
-            row
+            row?.id
               ? openWorkOrderForAppointment(ctx, row)
                 ? `<a class="btn secondary" href="#/werkbonnen/${row.workOrderId}">Open werkbon</a>`
                 : `<button class="btn accent" type="button" data-workorder="${row.id}">Maak werkbon</button>`
@@ -1478,23 +1800,34 @@ export async function planning(ctx, id, extra) {
     id = "";
   }
   if (id === "new" || (id && id !== "new")) {
-    const row = id === "new" ? null : ctx.appointments.find((a) => a.id === id);
+    let row = id === "new" ? null : ctx.appointments.find((a) => a.id === id);
+    let quote = null;
+    if (id === "new" && (extra || "").startsWith("quote/")) {
+      const quoteId = extra.slice("quote/".length);
+      quote = (ctx.quotes || []).find((q) => q.id === quoteId) || null;
+      const existing = appointmentForQuote(ctx, quoteId);
+      if (existing) row = existing;
+      else if (quote) row = jobDraftFromQuote(ctx, quote);
+    }
     if (id !== "new" && !row) return { title: "Job", html: empty("Job niet gevonden.") };
     let startMs = Date.now();
-    if (id === "new" && extra) {
+    if (id === "new" && extra && !(extra || "").startsWith("quote/")) {
       const parsed = Date.parse(decodeURIComponent(extra));
       if (!Number.isNaN(parsed)) startMs = parsed;
     }
+    const saved = Boolean(row?.id);
     return {
-      title: row ? row.title : "Nieuwe job",
-      subtitle: "Planning",
-      actions: row
+      title: saved ? row.title : quote ? quote.title : "Nieuwe job",
+      subtitle: quote ? `Planning vanuit ${quote.number}` : "Planning",
+      actions: saved
         ? `${
             openWorkOrderForAppointment(ctx, row)
               ? `<a class="btn secondary" href="#/werkbonnen/${row.workOrderId}">Open werkbon</a>`
               : `<button class="btn accent" type="button" data-workorder="${row.id}">Maak werkbon</button>`
-          }<button class="btn danger" data-delete="appointments:${row.id}">Verwijderen</button>`
-        : "",
+          }${row.quoteId ? `<a class="btn secondary" href="#/offertes/${row.quoteId}">Open offerte</a>` : ""}<button class="btn danger" data-delete="appointments:${row.id}">Verwijderen</button>`
+        : quote
+          ? `<a class="btn secondary" href="#/offertes/${quote.id}">Terug naar offerte</a>`
+          : "",
       html: jobForm(ctx, row, startMs),
     };
   }
@@ -1512,15 +1845,13 @@ export async function planning(ctx, id, extra) {
   return {
     title: "Planning",
     subtitle: weekLabel,
-    actions: `<div class="row">
-      <button class="btn secondary" type="button" data-week-nav="today">Vandaag</button>
-      <a class="btn accent" href="#/planning/new">Nieuwe job</a>
-    </div>`,
+    actions: `<a class="btn accent" href="#/planning/new">Nieuwe job</a>`,
     html: `<div class="panel cal-wrap">
       <div class="cal-weekbar">
         <button class="btn secondary cal-arrow" type="button" data-week-nav="prev" aria-label="Vorige week">←</button>
         <strong>${h(weekLabel)}</strong>
         <button class="btn secondary cal-arrow" type="button" data-week-nav="next" aria-label="Volgende week">→</button>
+        <button class="btn secondary" type="button" data-week-nav="today">Vandaag</button>
       </div>
       <div class="cal">
         <div class="cal-corner"></div>
@@ -1844,6 +2175,7 @@ export async function handleSave(type, data, ctx) {
     await db.put("customers", {
       id,
       garageId,
+      number: prevCustomer?.number || (await nextDocNumber(garageId, "customers", "KL")),
       name: data.name,
       company: data.company || "",
       phone: data.phone || "",
@@ -1937,6 +2269,7 @@ export async function handleSave(type, data, ctx) {
   if (type === "part") {
     const id = data.id || uid();
     const prev = data.id ? await db.get("parts", data.id) : null;
+    const supplier = (ctx.suppliers || []).find((s) => s.id === data.supplierId);
     await db.put("parts", {
       ...(prev || {}),
       id,
@@ -1945,7 +2278,8 @@ export async function handleSave(type, data, ctx) {
       name: data.name,
       brand: data.brand || "",
       category: data.category || "",
-      supplier: data.supplier || "",
+      supplier: supplier?.name || "",
+      supplierId: supplier?.id || "",
       purchasePrice: Number(data.purchasePrice || 0),
       unitPrice: Number(data.unitPrice),
       stock: Number(data.stock || 0),
@@ -1953,6 +2287,28 @@ export async function handleSave(type, data, ctx) {
       location: data.location || "",
     });
     return `#/onderdelen/${id}`;
+  }
+  if (type === "supplier") {
+    const id = data.id || uid();
+    const prev = data.id ? await db.get("suppliers", data.id) : null;
+    const name = String(data.name || "").trim();
+    await db.put("suppliers", {
+      id,
+      garageId,
+      number: prev?.number || (await nextDocNumber(garageId, "suppliers", "LV")),
+      name,
+      contact: data.contact || "",
+      phone: data.phone || "",
+      email: data.email || "",
+      address: data.address || "",
+      notes: data.notes || "",
+    });
+    if (prev && prev.name !== name) {
+      for (const part of ctx.parts.filter((p) => p.supplierId === id || p.supplier === prev.name)) {
+        await db.put("parts", { ...part, supplier: name, supplierId: id });
+      }
+    }
+    return `#/leveranciers/${id}`;
   }
   if (type === "quote") {
     const id = data.id || uid();
@@ -1999,6 +2355,8 @@ export async function handleSave(type, data, ctx) {
   if (type === "appointment") {
     const id = data.id || uid();
     const prev = data.id ? await db.get("appointments", data.id) : null;
+    const quoteId = data.quoteId || prev?.quoteId || null;
+    const quote = quoteId ? await db.get("quotes", quoteId) : null;
     await db.put("appointments", {
       id,
       garageId,
@@ -2006,11 +2364,15 @@ export async function handleSave(type, data, ctx) {
       customerId: data.customerId,
       vehicleId: data.vehicleId || null,
       technicianId: data.technicianId || null,
-      workOrderId: prev?.workOrderId || null,
+      workOrderId: prev?.workOrderId || quote?.workOrderId || null,
+      quoteId,
       start: new Date(data.start).getTime(),
       end: new Date(data.end).getTime(),
       notes: data.notes || "",
     });
+    if (quote && quote.status !== "aanvaard") {
+      await db.put("quotes", { ...quote, status: "aanvaard" });
+    }
     return weekHref(new Date(data.start).getTime());
   }
   if (type === "equipment") {
@@ -2085,8 +2447,27 @@ export async function handleDelete(store, id, ctx) {
     await db.remove(store, id);
     return "#/offertes";
   }
+  if (store === "suppliers") {
+    for (const part of ctx.parts.filter((p) => p.supplierId === id)) {
+      await db.put("parts", { ...part, supplierId: "" });
+    }
+    await db.remove(store, id);
+    return "#/leveranciers";
+  }
+  if (store === "stockMovements") {
+    const row = await db.get("stockMovements", id);
+    if (row?.partId) {
+      const part = await db.get("parts", row.partId);
+      if (part) {
+        part.stock = Number(part.stock || 0) - Number(row.qty || 0);
+        await db.put("parts", part);
+      }
+    }
+    await db.remove(store, id);
+    return "#/voorraadboekingen";
+  }
   await db.remove(store, id);
-  return `#/${store === "customers" ? "klanten" : store === "vehicles" ? "voertuigen" : store === "parts" ? "onderdelen" : store === "equipment" ? "apparatuur" : store === "technicians" ? "instellingen" : store === "appointments" ? "planning" : "dashboard"}`;
+  return `#/${store === "customers" ? "klanten" : store === "vehicles" ? "voertuigen" : store === "parts" ? "onderdelen" : store === "suppliers" ? "leveranciers" : store === "equipment" ? "apparatuur" : store === "technicians" ? "instellingen" : store === "appointments" ? "planning" : store === "stockMovements" ? "voorraadboekingen" : "dashboard"}`;
 }
 
 export async function createWorkOrderFromAppointment(appointmentId, ctx, options = {}) {
@@ -2123,18 +2504,241 @@ export async function createWorkOrderFromAppointment(appointmentId, ctx, options
 
 const MAX_WO_FILE = 20 * 1024 * 1024;
 
+function normKey(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function findImportedSupplier(list, incoming) {
+  const number = normKey(incoming.number);
+  if (number) {
+    const byNumber = list.find((s) => normKey(s.number) === number);
+    if (byNumber) return byNumber;
+  }
+  const email = normKey(incoming.email);
+  if (email) {
+    const byEmail = list.find((s) => normKey(s.email) === email);
+    if (byEmail) return byEmail;
+  }
+  const name = normKey(incoming.name);
+  if (!name) return null;
+  return list.find((s) => normKey(s.name) === name) || null;
+}
+
+function findImportedCustomer(list, incoming) {
+  const email = normKey(incoming.email);
+  if (email) {
+    const byEmail = list.find((c) => normKey(c.email) === email);
+    if (byEmail) return byEmail;
+  }
+  const name = normKey(incoming.name);
+  const company = normKey(incoming.company);
+  if (!name && !company) return null;
+  const both = list.find((c) => normKey(c.name) === name && normKey(c.company) === company);
+  if (both) return both;
+  return null;
+}
+
+function resolveCustomerForVehicle(customers, name, company) {
+  const raw = String(name || "").trim();
+  if (!raw) return null;
+  let namePart = raw;
+  let companyPart = String(company || "").trim();
+  if (raw.includes(" · ")) {
+    const [left, right] = raw.split(" · ").map((part) => part.trim());
+    namePart = left;
+    companyPart = companyPart || right;
+  }
+  const n = normKey(namePart);
+  const co = normKey(companyPart);
+  if (co) {
+    const both = customers.find((c) => normKey(c.name) === n && normKey(c.company) === co);
+    if (both) return both;
+  }
+  const byName = customers.filter((c) => normKey(c.name) === n);
+  if (byName.length === 1) return byName[0];
+  if (byName.length > 1 && co) return byName.find((c) => normKey(c.company) === co) || null;
+  const byCompany = customers.filter((c) => normKey(c.company) === n);
+  if (byCompany.length === 1) return byCompany[0];
+  return null;
+}
+
+function parseFuel(value) {
+  const v = String(value || "").trim().toLowerCase();
+  if (FUELS.includes(v)) return v;
+  if (["petrol", "gasoline", "essence"].includes(v)) return "benzine";
+  if (["electric", "ev", "elektro"].includes(v)) return "elektrisch";
+  if (["hybrid", "hev"].includes(v)) return "hybride";
+  if (v === "gas") return "lpg";
+  return v || "benzine";
+}
+
+async function ensureSupplierByName(garageId, name, cache) {
+  const trimmed = String(name || "").trim();
+  if (!trimmed) return { name: "", id: "" };
+  const key = trimmed.toLowerCase();
+  if (cache.has(key)) {
+    const row = cache.get(key);
+    return { name: row.name, id: row.id };
+  }
+  const row = {
+    id: uid(),
+    garageId,
+    number: await nextDocNumber(garageId, "suppliers", "LV"),
+    name: trimmed,
+    contact: "",
+    phone: "",
+    email: "",
+    address: "",
+    notes: "",
+  };
+  await db.put("suppliers", row);
+  cache.set(key, row);
+  return { name: row.name, id: row.id };
+}
+
 export async function importPartsExcel(file, ctx) {
+  return importExcel("parts", file, ctx);
+}
+
+export async function importExcel(kind, file, ctx) {
   const rows = await rowsFromSpreadsheet(file);
+  if (kind === "customers") {
+    const incoming = customersFromRows(rows);
+    if (!incoming.length) {
+      alert("Geen klanten gevonden in dit bestand. Controleer de kolomkoppen.");
+      return "#/klanten";
+    }
+    const list = [...ctx.customers];
+    let created = 0;
+    let updated = 0;
+    for (const row of incoming) {
+      const prev = findImportedCustomer(list, row);
+      const id = prev?.id || uid();
+      const record = {
+        ...(prev || {}),
+        id,
+        garageId: ctx.garage.id,
+        number: prev?.number || row.number || (await nextDocNumber(ctx.garage.id, "customers", "KL")),
+        name: row.name || prev?.name || "",
+        company: row.company || prev?.company || "",
+        phone: row.phone || prev?.phone || "",
+        phone2: row.phone2 || prev?.phone2 || "",
+        phone3: row.phone3 || prev?.phone3 || "",
+        email: row.email || prev?.email || "",
+        address: row.address || prev?.address || "",
+        postalCode: row.postalCode || prev?.postalCode || "",
+        city: row.city || prev?.city || "",
+        vatNumber: row.vatNumber || prev?.vatNumber || "",
+        peppolId: row.peppolId || prev?.peppolId || "",
+        notes: row.notes || prev?.notes || "",
+        createdAt: prev?.createdAt || Date.now(),
+      };
+      await db.put("customers", record);
+      if (prev) {
+        Object.assign(prev, record);
+        updated += 1;
+      } else {
+        list.push(record);
+        created += 1;
+      }
+    }
+    alert(`${incoming.length} rijen verwerkt: ${created} nieuw, ${updated} bijgewerkt.`);
+    return "#/klanten";
+  }
+  if (kind === "vehicles") {
+    const incoming = vehiclesFromRows(rows);
+    if (!incoming.length) {
+      alert("Geen voertuigen gevonden in dit bestand. Controleer de kolomkoppen.");
+      return "#/voertuigen";
+    }
+    const existing = new Map(ctx.vehicles.map((v) => [normalizePlate(v.licensePlate), v]));
+    let created = 0;
+    let updated = 0;
+    const skipped = [];
+    for (const row of incoming) {
+      const customer = resolveCustomerForVehicle(ctx.customers, row.customer, row.company);
+      if (!customer) {
+        skipped.push(row.licensePlate);
+        continue;
+      }
+      const plateKey = normalizePlate(row.licensePlate);
+      const prev = existing.get(plateKey);
+      await db.put("vehicles", {
+        ...(prev || {}),
+        id: prev?.id || uid(),
+        garageId: ctx.garage.id,
+        customerId: customer.id,
+        licensePlate: String(row.licensePlate || prev?.licensePlate || "").toUpperCase(),
+        brand: row.brand || prev?.brand || "",
+        model: row.model || prev?.model || "",
+        year: Number(row.year || prev?.year || 0),
+        vin: row.vin || prev?.vin || "",
+        fuel: parseFuel(row.fuel || prev?.fuel),
+        mileage: Number(row.mileage || prev?.mileage || 0),
+      });
+      if (prev) updated += 1;
+      else created += 1;
+    }
+    const skipText = skipped.length ? ` ${skipped.length} overgeslagen (onbekende klant): ${skipped.slice(0, 8).join(", ")}${skipped.length > 8 ? "…" : ""}.` : "";
+    alert(`${incoming.length} rijen bekeken: ${created} nieuw, ${updated} bijgewerkt.${skipText}`);
+    return "#/voertuigen";
+  }
+  if (kind === "suppliers") {
+    const incoming = suppliersFromRows(rows);
+    if (!incoming.length) {
+      alert("Geen leveranciers gevonden in dit bestand. Controleer de kolomkoppen.");
+      return "#/leveranciers";
+    }
+    const list = [...(ctx.suppliers || [])];
+    let created = 0;
+    let updated = 0;
+    for (const row of incoming) {
+      const prev = findImportedSupplier(list, row);
+      const id = prev?.id || uid();
+      const name = String(row.name || prev?.name || "").trim();
+      if (!name) continue;
+      const record = {
+        ...(prev || {}),
+        id,
+        garageId: ctx.garage.id,
+        number: prev?.number || row.number || (await nextDocNumber(ctx.garage.id, "suppliers", "LV")),
+        name,
+        contact: row.contact || prev?.contact || "",
+        phone: row.phone || prev?.phone || "",
+        email: row.email || prev?.email || "",
+        address: row.address || prev?.address || "",
+        notes: row.notes || prev?.notes || "",
+      };
+      await db.put("suppliers", record);
+      if (prev && prev.name !== name) {
+        for (const part of ctx.parts.filter((p) => p.supplierId === id || p.supplier === prev.name)) {
+          await db.put("parts", { ...part, supplier: name, supplierId: id });
+        }
+      }
+      if (prev) {
+        Object.assign(prev, record);
+        updated += 1;
+      } else {
+        list.push(record);
+        created += 1;
+      }
+    }
+    alert(`${incoming.length} rijen verwerkt: ${created} nieuw, ${updated} bijgewerkt.`);
+    return "#/leveranciers";
+  }
   const incoming = partsFromRows(rows);
   if (!incoming.length) {
     alert("Geen onderdelen gevonden in dit bestand. Controleer de kolomkoppen.");
     return "#/onderdelen";
   }
   const existing = new Map(ctx.parts.map((part) => [String(part.sku).toLowerCase(), part]));
+  const suppliers = new Map((ctx.suppliers || []).map((s) => [String(s.name || "").trim().toLowerCase(), s]));
   let created = 0;
   let updated = 0;
   for (const part of incoming) {
     const prev = existing.get(part.sku.toLowerCase());
+    const supplierName = part.supplier || prev?.supplier || "";
+    const supplier = await ensureSupplierByName(ctx.garage.id, supplierName, suppliers);
     await db.put("parts", {
       ...(prev || {}),
       id: prev?.id || uid(),
@@ -2143,7 +2747,8 @@ export async function importPartsExcel(file, ctx) {
       name: part.name,
       brand: part.brand,
       category: part.category,
-      supplier: part.supplier || prev?.supplier || "",
+      supplier: supplier.name,
+      supplierId: supplier.id,
       purchasePrice: part.purchasePrice || prev?.purchasePrice || 0,
       unitPrice: part.unitPrice,
       stock: part.stock,
@@ -2155,6 +2760,77 @@ export async function importPartsExcel(file, ctx) {
   }
   alert(`${incoming.length} rijen verwerkt: ${created} nieuw, ${updated} bijgewerkt.`);
   return "#/onderdelen";
+}
+
+export function exportExcel(kind, ctx) {
+  const stamp = isoDate(Date.now());
+  if (kind === "customers") {
+    downloadCsv(
+      `klanten-${stamp}.csv`,
+      ["Nummer", "Naam", "Bedrijf", "Telefoon", "Telefoon 2", "Telefoon 3", "E-mail", "Adres", "Postcode", "Gemeente", "BTW", "Peppol-ID", "Notities"],
+      ctx.customers.map((c) => [
+        c.number,
+        c.name,
+        c.company,
+        c.phone,
+        c.phone2,
+        c.phone3,
+        c.email,
+        c.address,
+        c.postalCode,
+        c.city,
+        c.vatNumber,
+        c.peppolId,
+        c.notes,
+      ])
+    );
+    return;
+  }
+  if (kind === "vehicles") {
+    downloadCsv(
+      `voertuigen-${stamp}.csv`,
+      ["Nummerplaat", "Merk", "Model", "Klant", "Bedrijf", "Brandstof", "Km", "Bouwjaar", "VIN"],
+      ctx.vehicles.map((v) => {
+        const customer = ctx.customers.find((c) => c.id === v.customerId);
+        return [
+          v.licensePlate,
+          v.brand,
+          v.model,
+          customer?.name || "",
+          customer?.company || "",
+          v.fuel,
+          v.mileage,
+          v.year,
+          v.vin,
+        ];
+      })
+    );
+    return;
+  }
+  if (kind === "suppliers") {
+    downloadCsv(
+      `leveranciers-${stamp}.csv`,
+      ["Nummer", "Naam", "Contact", "Telefoon", "E-mail", "Adres", "Notities"],
+      (ctx.suppliers || []).map((s) => [s.number, s.name, s.contact, s.phone, s.email, s.address, s.notes])
+    );
+    return;
+  }
+  downloadCsv(
+    `onderdelen-${stamp}.csv`,
+    ["SKU", "Naam", "Merk", "Categorie", "Leverancier", "Aankoopprijs", "Verkoopprijs", "Voorraad", "Minimum", "Locatie"],
+    ctx.parts.map((p) => [
+      p.sku,
+      p.name,
+      p.brand,
+      p.category,
+      p.supplier,
+      p.purchasePrice,
+      p.unitPrice,
+      p.stock,
+      p.minStock,
+      p.location,
+    ])
+  );
 }
 
 export async function addWorkOrderFiles(workOrderId, fileList, garageId) {
@@ -2299,6 +2975,7 @@ export async function setQuoteStatus(id, status) {
   const quote = await db.get("quotes", id);
   if (!quote) return "#/offertes";
   await db.put("quotes", { ...quote, status });
+  if (status === "aanvaard") return `#/planning/new/quote/${id}`;
   return `#/offertes/${id}`;
 }
 
@@ -2336,5 +3013,7 @@ export async function convertQuoteToWorkOrder(quoteId, ctx) {
     });
   }
   await db.put("quotes", { ...quote, status: "aanvaard", workOrderId: id });
+  const job = appointmentForQuote(ctx, quote.id);
+  if (job && !job.workOrderId) await db.put("appointments", { ...job, workOrderId: id });
   return `#/werkbonnen/${id}`;
 }

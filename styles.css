@@ -151,6 +151,26 @@ nav a.active { background: rgba(245, 158, 11, 0.18); color: #fbbf24; }
   gap: 8px;
 }
 .btn.secondary { background: white; color: var(--text); border: 1px solid var(--line); }
+label.btn {
+  cursor: pointer;
+  position: relative;
+  line-height: 1.2;
+}
+label.btn input {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.excel-btn {
+  width: 190px;
+  height: 42px;
+  justify-content: center;
+  text-align: center;
+  box-sizing: border-box;
+}
 .btn.accent { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
 .btn.danger { background: #fef2f2; color: var(--danger); border: 1px solid #fecaca; }
 
@@ -170,7 +190,14 @@ nav a.active { background: rgba(245, 158, 11, 0.18); color: #fbbf24; }
   padding: 10px 12px;
   background: white;
 }
-.combo { position: relative; }
+.combo { position: relative; min-width: 220px; flex: 1.2; }
+.stock-line {
+  display: grid;
+  grid-template-columns: minmax(220px, 2fr) 160px 140px auto;
+  gap: 12px;
+  align-items: end;
+}
+.stock-line-remove { height: 42px; min-width: 42px; }
 .combo-select {
   position: absolute;
   width: 1px;
@@ -335,6 +362,7 @@ tr.clickable:hover { background: #fffbeb; }
   .sidebar.open { transform: none; }
   .menu-btn { display: inline-flex; }
   .grid-4, .grid-3, .grid-2 { grid-template-columns: 1fr; }
+  .stock-line { grid-template-columns: 1fr; }
   .main { padding: 18px 16px 48px; }
 }
 

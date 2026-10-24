@@ -1,4 +1,4 @@
-const CACHE = "werkplaats-v29";
+const CACHE = "werkplaats-v40";
 const ASSETS = [
   "./",
   "./index.html",

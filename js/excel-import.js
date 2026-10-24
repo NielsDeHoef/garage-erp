@@ -102,7 +102,7 @@ function parseCsv(text) {
   return rows;
 }
 
-const HEADER_MAP = {
+const PART_HEADERS = {
   sku: ["sku", "artikel", "artikelnummer", "artnr", "art.nr", "ref", "code", "partno", "part number", "referentie"],
   name: ["naam", "name", "omschrijving", "description", "artikelnaam", "onderdeel"],
   brand: ["merk", "brand", "manufacturer", "fabrikant"],
@@ -115,6 +115,44 @@ const HEADER_MAP = {
   location: ["locatie", "location", "rek", "vak", "plaats"],
 };
 
+const CUSTOMER_HEADERS = {
+  number: ["nummer", "klantnummer", "number", "nr"],
+  name: ["naam", "name", "klant", "klantnaam"],
+  company: ["bedrijf", "company", "firma", "vennootschap"],
+  phone: ["telefoon", "telefoon 1", "gsm", "phone", "tel"],
+  phone2: ["telefoon 2", "gsm 2", "phone2"],
+  phone3: ["telefoon 3", "gsm 3", "phone3"],
+  email: ["e-mail", "email", "mail"],
+  address: ["adres", "address", "straat"],
+  postalCode: ["postcode", "zip"],
+  city: ["gemeente", "plaats", "stad", "city"],
+  vatNumber: ["btw", "btw-nummer", "vat", "vat number"],
+  peppolId: ["peppol", "peppol-id", "peppol id"],
+  notes: ["notities", "notes", "opmerking", "opmerkingen"],
+};
+
+const SUPPLIER_HEADERS = {
+  number: ["nummer", "leveranciersnummer", "number", "nr"],
+  name: ["naam", "name", "leverancier", "leveranciersnaam"],
+  contact: ["contact", "contactpersoon", "contact persoon"],
+  phone: ["telefoon", "gsm", "phone", "tel"],
+  email: ["e-mail", "email", "mail"],
+  address: ["adres", "address", "straat"],
+  notes: ["notities", "notes", "opmerking", "opmerkingen"],
+};
+
+const VEHICLE_HEADERS = {
+  licensePlate: ["nummerplaat", "kenteken", "plate", "license", "license plate"],
+  brand: ["merk", "brand"],
+  model: ["model"],
+  customer: ["klant", "klantnaam", "customer", "eigenaar"],
+  company: ["bedrijf", "company", "firma"],
+  fuel: ["brandstof", "fuel"],
+  mileage: ["km", "kilometerstand", "mileage", "kilometers"],
+  year: ["bouwjaar", "year", "jaar"],
+  vin: ["vin", "chassisnummer", "chassis"],
+};
+
 function normHeader(value) {
   return String(value || "")
     .toLowerCase()
@@ -123,15 +161,20 @@ function normHeader(value) {
     .trim();
 }
 
-function mapHeaders(row) {
+function mapHeaders(row, aliases) {
   const map = {};
   row.forEach((cell, index) => {
     const label = normHeader(cell);
-    for (const [field, aliases] of Object.entries(HEADER_MAP)) {
-      if (aliases.includes(label) && map[field] == null) map[field] = index;
+    for (const [field, names] of Object.entries(aliases)) {
+      if (names.includes(label) && map[field] == null) map[field] = index;
     }
   });
   return map;
+}
+
+function cell(row, headers, key) {
+  if (headers[key] == null) return "";
+  return String(row[headers[key]] ?? "").trim();
 }
 
 function numberValue(value) {
@@ -161,7 +204,7 @@ export async function rowsFromSpreadsheet(file) {
 export function partsFromRows(rows) {
   if (!rows.length) return [];
   let start = 0;
-  let headers = mapHeaders(rows[0]);
+  let headers = mapHeaders(rows[0], PART_HEADERS);
   if (Object.keys(headers).length >= 2) start = 1;
   else {
     headers = {
@@ -179,21 +222,152 @@ export function partsFromRows(rows) {
   }
   const parts = [];
   for (const row of rows.slice(start)) {
-    const sku = String(row[headers.sku] ?? "").trim();
-    const name = String(row[headers.name] ?? "").trim();
+    const sku = cell(row, headers, "sku");
+    const name = cell(row, headers, "name");
     if (!sku && !name) continue;
     parts.push({
       sku: sku || name.slice(0, 24),
       name: name || sku,
-      brand: String(row[headers.brand] ?? "").trim(),
-      category: String(row[headers.category] ?? "").trim(),
+      brand: cell(row, headers, "brand"),
+      category: cell(row, headers, "category"),
       unitPrice: numberValue(row[headers.unitPrice]),
       purchasePrice: numberValue(row[headers.purchasePrice]),
-      supplier: String(row[headers.supplier] ?? "").trim(),
+      supplier: cell(row, headers, "supplier"),
       stock: numberValue(row[headers.stock]),
       minStock: numberValue(row[headers.minStock]),
-      location: String(row[headers.location] ?? "").trim(),
+      location: cell(row, headers, "location"),
     });
   }
   return parts;
+}
+
+export function customersFromRows(rows) {
+  if (!rows.length) return [];
+  let start = 0;
+  let headers = mapHeaders(rows[0], CUSTOMER_HEADERS);
+  if (Object.keys(headers).length >= 2) start = 1;
+  else {
+    headers = {
+      name: 0,
+      company: 1,
+      phone: 2,
+      email: 3,
+      address: 4,
+      postalCode: 5,
+      city: 6,
+      vatNumber: 7,
+    };
+  }
+  const customers = [];
+  for (const row of rows.slice(start)) {
+    const name = cell(row, headers, "name");
+    const company = cell(row, headers, "company");
+    const email = cell(row, headers, "email");
+    if (!name && !company && !email) continue;
+    customers.push({
+      number: cell(row, headers, "number"),
+      name: name || company,
+      company,
+      phone: cell(row, headers, "phone"),
+      phone2: cell(row, headers, "phone2"),
+      phone3: cell(row, headers, "phone3"),
+      email,
+      address: cell(row, headers, "address"),
+      postalCode: cell(row, headers, "postalCode"),
+      city: cell(row, headers, "city"),
+      vatNumber: cell(row, headers, "vatNumber"),
+      peppolId: cell(row, headers, "peppolId"),
+      notes: cell(row, headers, "notes"),
+    });
+  }
+  return customers;
+}
+
+export function suppliersFromRows(rows) {
+  if (!rows.length) return [];
+  let start = 0;
+  let headers = mapHeaders(rows[0], SUPPLIER_HEADERS);
+  if (Object.keys(headers).length >= 2) start = 1;
+  else {
+    headers = {
+      number: 0,
+      name: 1,
+      contact: 2,
+      phone: 3,
+      email: 4,
+      address: 5,
+      notes: 6,
+    };
+  }
+  const suppliers = [];
+  for (const row of rows.slice(start)) {
+    const name = cell(row, headers, "name");
+    const email = cell(row, headers, "email");
+    const number = cell(row, headers, "number");
+    if (!name && !email && !number) continue;
+    suppliers.push({
+      number,
+      name,
+      contact: cell(row, headers, "contact"),
+      phone: cell(row, headers, "phone"),
+      email,
+      address: cell(row, headers, "address"),
+      notes: cell(row, headers, "notes"),
+    });
+  }
+  return suppliers;
+}
+
+export function vehiclesFromRows(rows) {
+  if (!rows.length) return [];
+  let start = 0;
+  let headers = mapHeaders(rows[0], VEHICLE_HEADERS);
+  if (Object.keys(headers).length >= 2) start = 1;
+  else {
+    headers = {
+      licensePlate: 0,
+      brand: 1,
+      model: 2,
+      customer: 3,
+      fuel: 4,
+      mileage: 5,
+      year: 6,
+      vin: 7,
+      company: 8,
+    };
+  }
+  const vehicles = [];
+  for (const row of rows.slice(start)) {
+    const licensePlate = cell(row, headers, "licensePlate");
+    if (!licensePlate) continue;
+    vehicles.push({
+      licensePlate,
+      brand: cell(row, headers, "brand"),
+      model: cell(row, headers, "model"),
+      customer: cell(row, headers, "customer"),
+      company: cell(row, headers, "company"),
+      fuel: cell(row, headers, "fuel"),
+      mileage: numberValue(row[headers.mileage]),
+      year: numberValue(row[headers.year]),
+      vin: cell(row, headers, "vin"),
+    });
+  }
+  return vehicles;
+}
+
+function csvCell(value) {
+  const s = String(value ?? "");
+  if (/[;"\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+export function downloadCsv(filename, headers, rows) {
+  const lines = [headers, ...rows].map((row) => row.map(csvCell).join(";"));
+  const blob = new Blob([`\uFEFF${lines.join("\r\n")}`], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
 }

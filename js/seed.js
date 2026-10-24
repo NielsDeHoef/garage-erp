@@ -52,6 +52,7 @@ export async function seedDemo() {
   await db.put("customers", {
     id: c1,
     garageId: g1,
+    number: "KL2026-0001",
     name: "Jan Vermeulen",
     company: "",
     phone: "0476 12 34 56",
@@ -68,6 +69,7 @@ export async function seedDemo() {
   await db.put("customers", {
     id: c2,
     garageId: g1,
+    number: "KL2026-0002",
     name: "Sophie Maes",
     company: "Maes Transport",
     phone: "0498 88 21 09",
@@ -82,6 +84,7 @@ export async function seedDemo() {
   await db.put("customers", {
     id: c3,
     garageId: g1,
+    number: "KL2026-0003",
     name: "Thomas de Vries",
     company: "",
     phone: "06 1234 7788",
@@ -141,6 +144,43 @@ export async function seedDemo() {
   await db.put("technicians", { id: t2, garageId: g1, name: "Lisa Declercq", active: true });
   await db.put("technicians", { id: t3, garageId: g1, name: "Mark Hendriks", active: true });
 
+  const s1 = uid();
+  const s2 = uid();
+  const s3 = uid();
+  await db.put("suppliers", {
+    id: s1,
+    garageId: g1,
+    number: "LV2026-0001",
+    name: "Castrol Belgium",
+    contact: "Pieter Bosmans",
+    phone: "02 123 45 67",
+    email: "orders@castrol.be",
+    address: "Havenlaan 86, 1000 Brussel",
+    notes: "Smeermiddelen, levering op dinsdag.",
+  });
+  await db.put("suppliers", {
+    id: s2,
+    garageId: g1,
+    number: "LV2026-0002",
+    name: "Mann Filter",
+    contact: "Klantendienst",
+    phone: "03 210 44 11",
+    email: "info@mann-filter.be",
+    address: "Noorderlaan 21, 2030 Antwerpen",
+    notes: "Filters en luchtinlaat.",
+  });
+  await db.put("suppliers", {
+    id: s3,
+    garageId: g1,
+    number: "LV2026-0003",
+    name: "Intertyre",
+    contact: "Sales desk",
+    phone: "09 330 12 80",
+    email: "order@intertyre.be",
+    address: "Industrieterrein Zuid 4, 9000 Gent",
+    notes: "Banden, snelle voorraad.",
+  });
+
   const p1 = uid();
   const p2 = uid();
   const p3 = uid();
@@ -153,6 +193,7 @@ export async function seedDemo() {
     brand: "Castrol",
     category: "Smeermiddelen",
     supplier: "Castrol Belgium",
+    supplierId: s1,
     purchasePrice: 28.4,
     unitPrice: 42.5,
     stock: 18,
@@ -167,6 +208,7 @@ export async function seedDemo() {
     brand: "Mann",
     category: "Filters",
     supplier: "Mann Filter",
+    supplierId: s2,
     purchasePrice: 8.2,
     unitPrice: 14.9,
     stock: 4,
@@ -181,6 +223,7 @@ export async function seedDemo() {
     brand: "Michelin",
     category: "Banden",
     supplier: "Intertyre",
+    supplierId: s3,
     purchasePrice: 78,
     unitPrice: 112,
     stock: 24,
@@ -195,6 +238,7 @@ export async function seedDemo() {
     brand: "Continental",
     category: "Banden",
     supplier: "Intertyre",
+    supplierId: s3,
     purchasePrice: 61,
     unitPrice: 89,
     stock: 16,
@@ -484,6 +528,80 @@ export async function ensureWorkOrderEquipment() {
     if (!machine) continue;
     await db.put("workOrders", { ...order, equipmentId: machine.id });
   }
+}
+
+const DEMO_SUPPLIERS = [
+  {
+    name: "Castrol Belgium",
+    contact: "Pieter Bosmans",
+    phone: "02 123 45 67",
+    email: "orders@castrol.be",
+    address: "Havenlaan 86, 1000 Brussel",
+    notes: "Smeermiddelen, levering op dinsdag.",
+  },
+  {
+    name: "Mann Filter",
+    contact: "Klantendienst",
+    phone: "03 210 44 11",
+    email: "info@mann-filter.be",
+    address: "Noorderlaan 21, 2030 Antwerpen",
+    notes: "Filters en luchtinlaat.",
+  },
+  {
+    name: "Intertyre",
+    contact: "Sales desk",
+    phone: "09 330 12 80",
+    email: "order@intertyre.be",
+    address: "Industrieterrein Zuid 4, 9000 Gent",
+    notes: "Banden, snelle voorraad.",
+  },
+];
+
+let demoSupplierEnsuring;
+
+export async function ensureSuppliers(garageId) {
+  if (demoSupplierEnsuring) return demoSupplierEnsuring;
+  demoSupplierEnsuring = (async () => {
+    const existing = await db.byGarage("suppliers", garageId);
+    const byName = new Map(existing.map((row) => [String(row.name || "").trim().toLowerCase(), row]));
+    const garage = await db.get("garages", garageId);
+    if (garage?.name === "AutoService De Waal") {
+      for (const demo of DEMO_SUPPLIERS) {
+        const key = demo.name.toLowerCase();
+        if (byName.has(key)) continue;
+        const row = { id: uid(), garageId, ...demo };
+        await db.put("suppliers", row);
+        byName.set(key, row);
+      }
+    }
+    const parts = await db.byGarage("parts", garageId);
+    for (const part of parts) {
+      const name = String(part.supplier || "").trim();
+      if (!name) {
+        if (part.supplierId) await db.put("parts", { ...part, supplierId: "" });
+        continue;
+      }
+      let supplier = byName.get(name.toLowerCase());
+      if (!supplier) {
+        supplier = {
+          id: uid(),
+          garageId,
+          name,
+          contact: "",
+          phone: "",
+          email: "",
+          address: "",
+          notes: "",
+        };
+        await db.put("suppliers", supplier);
+        byName.set(name.toLowerCase(), supplier);
+      }
+      if (part.supplierId !== supplier.id || part.supplier !== supplier.name) {
+        await db.put("parts", { ...part, supplier: supplier.name, supplierId: supplier.id });
+      }
+    }
+  })();
+  return demoSupplierEnsuring;
 }
 
 let demoAnprEnsuring;
