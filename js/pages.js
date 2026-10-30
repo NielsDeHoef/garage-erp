@@ -1,5 +1,5 @@
-import { db, nextDocNumber, lineTotals, exportAll, importAll } from "./db.js";
-import { customersFromRows, downloadCsv, partsFromRows, rowsFromSpreadsheet, suppliersFromRows, vehiclesFromRows } from "./excel-import.js";
+import { db, nextDocNumber, lineTotals, exportAll, importAll } from "./db.js?v=56";
+import { customersFromRows, downloadCsv, partsFromRows, rowsFromSpreadsheet, suppliersFromRows, vehiclesFromRows } from "./excel-import.js?v=56";
 import {
   EQUIPMENT_TYPES,
   FUELS,
@@ -25,7 +25,7 @@ import {
   toDatetimeLocal,
   todayIso,
   uid,
-} from "./format.js";
+} from "./format.js?v=56";
 
 const ANPR_WINDOW_MS = 12 * 60 * 60 * 1000;
 

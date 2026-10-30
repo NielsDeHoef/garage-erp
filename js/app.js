@@ -1,7 +1,7 @@
-import { db, ensureRecordNumbers } from "./db.js";
-import { ensureDemoCameraReads, ensureDemoQuotes, ensureEquipmentWorkstations, ensureSingleGarage, ensureSuppliers, ensureWorkOrderEquipment, seedDemo } from "./seed.js";
-import { h, toDatetimeLocal } from "./format.js";
-import * as pages from "./pages.js";
+import { db, ensureRecordNumbers } from "./db.js?v=56";
+import { ensureDemoCameraReads, ensureDemoQuotes, ensureEquipmentWorkstations, ensureSingleGarage, ensureSuppliers, ensureWorkOrderEquipment, seedDemo } from "./seed.js?v=56";
+import { h, toDatetimeLocal } from "./format.js?v=56";
+import * as pages from "./pages.js?v=56";
 import {
   downloadInvoicePdf,
   downloadPeppolUbl,
@@ -9,7 +9,7 @@ import {
   sendInvoiceEmail,
   sendQuoteEmail,
   sendQuoteSms,
-} from "./invoice-export.js";
+} from "./invoice-export.js?v=56";
 
 const appEl = document.getElementById("app");
 let search = "";
@@ -717,5 +717,5 @@ window.addEventListener("hashchange", () => {
 render();
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./sw.js").catch(() => {});
+  navigator.serviceWorker.register("./sw.js").then((reg) => reg.update()).catch(() => {});
 }

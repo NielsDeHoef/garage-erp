@@ -1,5 +1,5 @@
-import { db, STORES } from "./db.js";
-import { normalizePlate, uid } from "./format.js";
+import { db, STORES } from "./db.js?v=56";
+import { normalizePlate, uid } from "./format.js?v=56";
 
 export async function ensureSingleGarage(preferredId) {
   const garages = await db.getAll("garages");
