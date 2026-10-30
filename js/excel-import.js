@@ -112,7 +112,7 @@ const PART_HEADERS = {
   supplier: ["leverancier", "supplier", "vendor", "groothandel", "distributeur"],
   stock: ["voorraad", "stock", "qty", "aantal", "quantity"],
   minStock: ["min", "minimum", "minvoorraad", "minimumvoorraad", "min stock"],
-  location: ["locatie", "location", "rek", "vak", "plaats"],
+  location: ["stockplaats", "stock plaats", "locatie", "location", "rek", "vak", "plaats"],
 };
 
 const CUSTOMER_HEADERS = {
