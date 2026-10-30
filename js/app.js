@@ -1,5 +1,5 @@
-import { db } from "./db.js";
-import { ensureDemoCameraReads, ensureDemoQuotes, ensureEquipmentWorkstations, ensureSingleGarage, ensureWorkOrderEquipment, seedDemo } from "./seed.js";
+import { db, ensureRecordNumbers } from "./db.js";
+import { ensureDemoCameraReads, ensureDemoQuotes, ensureEquipmentWorkstations, ensureSingleGarage, ensureSuppliers, ensureWorkOrderEquipment, seedDemo } from "./seed.js";
 import { h, toDatetimeLocal } from "./format.js";
 import * as pages from "./pages.js";
 import {
@@ -31,6 +31,7 @@ async function loadCtx(garageId) {
     technicians,
     appointments,
     parts,
+    suppliers,
     workOrders,
     lines,
     invoices,
@@ -38,6 +39,7 @@ async function loadCtx(garageId) {
     quoteLines,
     equipment,
     cameraReads,
+    stockMovements,
   ] = await Promise.all([
     db.getAll("garages"),
     db.byGarage("customers", garageId),
@@ -45,6 +47,7 @@ async function loadCtx(garageId) {
     db.byGarage("technicians", garageId),
     db.byGarage("appointments", garageId),
     db.byGarage("parts", garageId),
+    db.byGarage("suppliers", garageId),
     db.byGarage("workOrders", garageId),
     db.byGarage("workOrderLines", garageId),
     db.byGarage("invoices", garageId),
@@ -52,6 +55,7 @@ async function loadCtx(garageId) {
     db.byGarage("quoteLines", garageId),
     db.byGarage("equipment", garageId),
     db.byGarage("cameraReads", garageId),
+    db.byGarage("stockMovements", garageId),
   ]);
   const garage = garages.find((g) => g.id === garageId) || garages[0];
   return {
@@ -62,6 +66,7 @@ async function loadCtx(garageId) {
     technicians,
     appointments,
     parts,
+    suppliers,
     workOrders,
     lines,
     invoices,
@@ -69,6 +74,7 @@ async function loadCtx(garageId) {
     quoteLines,
     equipment,
     cameraReads,
+    stockMovements,
     query: search.toLowerCase(),
     search,
   };
@@ -130,9 +136,13 @@ async function pageFor(section, id, ctx, extra) {
     case "werkbonnen":
       return pages.werkbonnen(ctx, id, extra);
     case "inrit":
-      return pages.inrit(ctx);
+      return pages.instellingen(ctx, "anpr");
     case "onderdelen":
-      return pages.onderdelen(ctx, id);
+      return pages.onderdelen(ctx, id, extra);
+    case "voorraadboekingen":
+      return pages.onderdelen(ctx, "boekingen", id === "new" ? "new" : id || extra);
+    case "leveranciers":
+      return pages.leveranciers(ctx, id);
     case "facturen":
       return pages.facturen(ctx, id);
     case "offertes":
@@ -140,9 +150,9 @@ async function pageFor(section, id, ctx, extra) {
     case "planning":
       return pages.planning(ctx, id, extra);
     case "apparatuur":
-      return pages.apparatuur(ctx, id);
+      return pages.instellingen(ctx, "apparatuur", id);
     case "instellingen":
-      return pages.instellingen(ctx);
+      return pages.instellingen(ctx, id, extra);
     default:
       return pages.dashboard(ctx);
   }
@@ -157,6 +167,9 @@ async function render() {
   const garageId = await ensureSingleGarage(localStorage.getItem("werkplaats-garage"));
   await ensureDemoCameraReads(garageId);
   await ensureDemoQuotes(garageId);
+  await ensureSuppliers(garageId);
+  await ensureRecordNumbers(garageId, "customers", "KL");
+  await ensureRecordNumbers(garageId, "suppliers", "LV");
   await ensureEquipmentWorkstations();
   await ensureWorkOrderEquipment();
   const ctx = await loadCtx(garageId);
@@ -218,11 +231,73 @@ function bind(ctx) {
     });
   });
 
+  const picker = appEl.querySelector("[data-col-picker]");
+  if (picker) {
+    const table = picker.getAttribute("data-col-picker");
+    picker.querySelector("[data-col-picker-toggle]")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      pages.toggleColumnPicker(table);
+      render();
+    });
+    picker.querySelectorAll("[data-col-toggle]").forEach((input) => {
+      input.addEventListener("click", (event) => event.stopPropagation());
+      input.addEventListener("change", () => {
+        pages.toggleColumn(table, input.getAttribute("data-col-toggle"), input.checked);
+        render();
+      });
+    });
+    picker.querySelectorAll("[data-col-move]").forEach((btn) => {
+      btn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const key = btn.closest("[data-col-key]")?.getAttribute("data-col-key");
+        pages.moveColumn(table, key, btn.getAttribute("data-col-move"));
+        render();
+      });
+    });
+    picker.querySelector("[data-col-reset]")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      pages.resetColumns(table);
+      render();
+    });
+    let dragKey = "";
+    picker.querySelectorAll("[data-col-key]").forEach((item) => {
+      item.addEventListener("dragstart", (event) => {
+        dragKey = item.getAttribute("data-col-key");
+        event.dataTransfer.effectAllowed = "move";
+        item.classList.add("dragging");
+      });
+      item.addEventListener("dragend", () => item.classList.remove("dragging"));
+      item.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        item.classList.add("drag-over");
+      });
+      item.addEventListener("dragleave", () => item.classList.remove("drag-over"));
+      item.addEventListener("drop", (event) => {
+        event.preventDefault();
+        item.classList.remove("drag-over");
+        const to = item.getAttribute("data-col-key");
+        if (dragKey && to) {
+          pages.reorderColumn(table, dragKey, to);
+          render();
+        }
+      });
+    });
+  }
+
   const searchEl = appEl.querySelector("[data-search]");
-  if (searchEl) {
+  if (searchEl && !pages.isColumnPickerOpen()) {
     searchEl.focus();
     const pos = searchEl.value.length;
     searchEl.setSelectionRange(pos, pos);
+    searchEl.addEventListener("input", (event) => {
+      search = event.target.value;
+      clearTimeout(searchEl._t);
+      searchEl._t = setTimeout(() => render(), 120);
+    });
+  } else if (searchEl) {
     searchEl.addEventListener("input", (event) => {
       search = event.target.value;
       clearTimeout(searchEl._t);
@@ -234,23 +309,33 @@ function bind(ctx) {
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const type = form.getAttribute("data-save");
-      const data = Object.fromEntries(new FormData(form).entries());
-      const next = await pages.handleSave(type, data, ctx);
+      const formData = new FormData(form);
+      const next =
+        type === "stockMovements"
+          ? await pages.saveStockMovements(formData, ctx)
+          : await pages.handleSave(type, Object.fromEntries(formData.entries()), ctx);
+      if (!next) return;
       location.hash = next;
       search = "";
       await render();
     });
   });
 
-  appEl.querySelector("[data-parts-excel]")?.addEventListener("change", async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    try {
-      location.hash = await pages.importPartsExcel(file, ctx);
-      await render();
-    } catch (error) {
-      alert(error.message || "Excel-import mislukt.");
-    }
+  appEl.querySelectorAll("[data-excel-import], [data-parts-excel]").forEach((input) => {
+    input.addEventListener("change", async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      const kind = input.getAttribute("data-excel-import") || "parts";
+      try {
+        location.hash = await pages.importExcel(kind, file, ctx);
+        await render();
+      } catch (error) {
+        alert(error.message || "Excel-import mislukt.");
+      }
+    });
+  });
+  appEl.querySelectorAll("[data-excel-export]").forEach((btn) => {
+    btn.addEventListener("click", () => pages.exportExcel(btn.getAttribute("data-excel-export"), ctx));
   });
 
   appEl.querySelector("[data-wo-file]")?.addEventListener("change", async (event) => {
@@ -419,14 +504,17 @@ function bind(ctx) {
     if (search) search.value = selectEl.selectedOptions[0]?.textContent?.trim() || "";
   };
 
-  appEl.querySelectorAll("[data-combo]").forEach((combo) => {
+  const bindCombo = (combo) => {
+    if (combo.dataset.bound) return;
+    combo.dataset.bound = "1";
     const selectEl = combo.querySelector("select");
     const search = combo.querySelector("[data-combo-search]");
     const panel = combo.querySelector(".combo-panel");
     if (!selectEl || !search || !panel) return;
     const items = () => [...combo.querySelectorAll(".combo-item")];
     const filterItems = () => {
-      const q = search.value.trim().toLowerCase();
+      const raw = search.value.trim();
+      const q = raw === "—" ? "" : raw.toLowerCase();
       const customerId = appEl.querySelector("select[name=customerId]")?.value || "";
       const isVehicle = selectEl.name === "vehicleId";
       items().forEach((item) => {
@@ -440,8 +528,25 @@ function bind(ctx) {
       panel.hidden = false;
       filterItems();
     };
-    search.addEventListener("focus", open);
-    search.addEventListener("input", open);
+    search.addEventListener("focus", () => {
+      if (!selectEl.value || search.value.trim() === "—") search.value = "";
+      open();
+    });
+    search.addEventListener("input", () => {
+      open();
+      if (selectEl.name !== "partId") return;
+      const q = search.value.trim().toLowerCase();
+      if (!q) return;
+      const match = items().find((item) => {
+        if (!item.dataset.value) return false;
+        const sku = item.textContent.split("·")[0].trim().toLowerCase();
+        return sku === q;
+      });
+      if (match && selectEl.value !== match.dataset.value) {
+        selectEl.value = match.dataset.value;
+        selectEl.dispatchEvent(new Event("change"));
+      }
+    });
     search.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         panel.hidden = true;
@@ -467,6 +572,23 @@ function bind(ctx) {
         selectEl.dispatchEvent(new Event("change"));
       });
     });
+  };
+
+  appEl.querySelectorAll("[data-combo]").forEach(bindCombo);
+
+  appEl.querySelector("[data-add-stock-line]")?.addEventListener("click", () => {
+    const wrap = appEl.querySelector("[data-stock-lines]");
+    const tpl = document.getElementById("stock-line-template");
+    if (!wrap || !tpl) return;
+    wrap.appendChild(tpl.content.cloneNode(true));
+    wrap.lastElementChild?.querySelectorAll("[data-combo]").forEach(bindCombo);
+  });
+  appEl.querySelector("[data-stock-lines]")?.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-remove-stock-line]");
+    if (!btn) return;
+    const wrap = appEl.querySelector("[data-stock-lines]");
+    if (wrap && wrap.querySelectorAll(".stock-line").length <= 1) return;
+    btn.closest(".stock-line")?.remove();
   });
 
   const appointmentSelect = appEl.querySelector("form[data-save=workOrder] select[name=appointmentId]");
@@ -559,10 +681,14 @@ function bind(ctx) {
   appEl.querySelectorAll("form[data-save=workOrderLine], form[data-save=quoteLine]").forEach((form) => {
     form.querySelector("[name=partId]")?.addEventListener("change", (event) => {
       const option = event.target.selectedOptions[0];
-      if (!option?.dataset.price) return;
-      form.querySelector("[name=unitPrice]").value = option.dataset.price;
-      if (option.dataset.name) form.querySelector("[name=description]").value = option.dataset.name;
-      form.querySelector("[name=type]").value = "onderdeel";
+      if (!option?.value) return;
+      if (option.dataset.price) form.querySelector("[name=unitPrice]").value = option.dataset.price;
+      if (option.dataset.name) {
+        const desc = form.querySelector("[name=description]");
+        if (desc) desc.value = option.dataset.name;
+      }
+      const typeEl = form.querySelector("[name=type]");
+      if (typeEl) typeEl.value = "onderdeel";
     });
   });
 }
@@ -571,13 +697,21 @@ window.werkplaatsAnprIngest = async (plate, cameraName = "ANPR") => {
   const garageId = localStorage.getItem("werkplaats-garage");
   if (!garageId) return null;
   const read = await pages.ingestCameraRead(garageId, plate, cameraName);
-  const section = location.hash.replace(/^#\/?/, "").split("/")[0];
-  if (section === "inrit") await render();
+  const parts = location.hash.replace(/^#\/?/, "").split("/");
+  if (parts[0] === "inrit" || (parts[0] === "instellingen" && parts[1] === "anpr")) await render();
   return read;
 };
 
+document.addEventListener("click", (event) => {
+  if (!pages.isColumnPickerOpen()) return;
+  if (event.target.closest("[data-col-picker]")) return;
+  pages.closeColumnPicker();
+  render();
+});
+
 window.addEventListener("hashchange", () => {
   search = "";
+  pages.closeColumnPicker();
   render();
 });
 render();

@@ -1,5 +1,5 @@
 const DB_NAME = "werkplaats-erp";
-const DB_VERSION = 4;
+const DB_VERSION = 6;
 export const STORES = [
   "garages",
   "customers",
@@ -7,6 +7,7 @@ export const STORES = [
   "technicians",
   "appointments",
   "parts",
+  "suppliers",
   "workOrders",
   "workOrderLines",
   "invoices",
@@ -15,6 +16,7 @@ export const STORES = [
   "equipment",
   "cameraReads",
   "workOrderFiles",
+  "stockMovements",
 ];
 
 let connection;
@@ -114,6 +116,15 @@ export async function nextDocNumber(garageId, store, prefix) {
     }
   }
   return `${marker}${String(max + 1).padStart(4, "0")}`;
+}
+
+export async function ensureRecordNumbers(garageId, store, prefix) {
+  const rows = await db.byGarage(store, garageId);
+  const missing = rows.filter((row) => !String(row.number || "").trim());
+  missing.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0) || String(a.name || "").localeCompare(String(b.name || ""), "nl"));
+  for (const row of missing) {
+    await db.put(store, { ...row, number: await nextDocNumber(garageId, store, prefix) });
+  }
 }
 
 export function lineTotals(lines, vatRate) {
