@@ -1,5 +1,5 @@
-import { customerPhones, isoDate } from "./format.js";
-import { lineTotals } from "./db.js";
+import { customerPhones, isoDate } from "./format.js?v=56";
+import { lineTotals } from "./db.js?v=56";
 
 function xml(value) {
   return String(value ?? "")
